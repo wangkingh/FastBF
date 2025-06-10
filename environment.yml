@@ -1,0 +1,21 @@
+name: bf312
+channels:
+  - conda-forge
+  - https://repo.anaconda.com/pkgs/main
+  - https://repo.anaconda.com/pkgs/r
+dependencies:
+  - cython
+  - h5py
+  - ipython
+  - matplotlib
+  - netcdf4
+  - numba
+  - numpy
+  - obspy
+  - pandas
+  - pybind11
+  - python=3.12
+  - scipy
+  - seaborn
+  - tqdm
+prefix: /home/wjx/anaconda3/envs/bf312
