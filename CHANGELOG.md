@@ -27,8 +27,3 @@ Packaging
 * `caponlib/__init__.py` now re-exports `BfTask` from `bftask.py`
   (former `task.py`) to avoid circular import.
 
-Migration guide
----------------
-1. `pip uninstall fastbf && pip install -e .`  # reload edited package
-2. Update any custom code that imported `Window.start_time`
-   – call `attach_times()` first, or access via `WindowAbs`.
