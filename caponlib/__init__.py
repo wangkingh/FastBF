@@ -10,7 +10,7 @@ from .sac_refactor   import organise_sac_files, write_sac_lists_by_time
 from .utils       import array_xy,load_stream
 
 # ── 任务 & 调度 ────────────────────────────────────────────
-from .task           import BfTask              # 先导入 Task，防循环依赖
+from .bftask          import BfTask              # 先导入 Task，防循环依赖
 from .scheduler      import run_parallel
 from .windows import Window, build_windows
 

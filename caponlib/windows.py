@@ -1,15 +1,17 @@
 from __future__ import annotations
+"""Split multi‑channel time‑series data into overlapping windows **without
+embedding absolute timestamps**.
 
-"""Split multi‑channel time‑series data into overlapping windows and return
-rich timestamp metadata **without allocating the data blocks**.
-
-Key changes vs. previous revision
----------------------------------
-1. **`winlen` (seconds)** replaces the old `n_samples` argument.
-   The function converts it to an integer number of samples via `dt`.
-2. Explicit sanity check for `hop_ratio` → must satisfy `0 < hop_ratio ≤ 1`.
-3. Additional guardrails: `winlen` must be positive and not longer than the
-   full record length.
+Re‑design highlights
+--------------------
+1. **`Window` now stores only sample indices and duration.**  Absolute UTC
+   timestamps are computed later, when the task knows the true record start
+   time.  This keeps the object lightweight and reusable.
+2. `build_windows()` is therefore _purely index‑based_; it no longer needs
+   the record's start time.  The helper `attach_times()` is provided to turn
+   a list of relative windows into absolute‑time windows when required
+   (e.g. right before calling the beamforming kernel).
+3. Input validation remains identical to the previous implementation.
 """
 
 from dataclasses import dataclass
@@ -19,27 +21,43 @@ from typing import List, Sequence, Tuple
 import numpy as np
 
 ###############################################################################
-# Data class
+# Data classes
 ###############################################################################
 
 @dataclass
 class Window:
-    """Metadata of a single window."""
+    """Lightweight window description — index space only."""
 
-    index: int                 # 0‑based window id
-    start_idx: int             # inclusive sample index
-    end_idx: int               # exclusive sample index
-    start_time: datetime       # UTC timestamp at start_idx
-    end_time: datetime         # UTC timestamp at end_idx
-    duration: float            # window length in seconds
+    index: int      # 0‑based window id
+    start_idx: int  # inclusive sample index
+    end_idx: int    # exclusive sample index
+
+    @property
+    def duration(self) -> int:
+        """Window length in samples."""
+        return self.end_idx - self.start_idx
 
     def __repr__(self) -> str:  # noqa: D401
+        return f"Window(idx={self.index}, start={self.start_idx}, end={self.end_idx}, len={self.duration})"
+
+
+@dataclass
+class WindowAbs(Window):
+    """Window with absolute UTC timestamps attached (for downstream algorithms)."""
+
+    start_time: datetime  # UTC timestamp at start_idx
+    end_time: datetime    # UTC timestamp at end_idx
+
+    def __post_init__(self):
+        # keep parent invariants
+        if self.end_idx <= self.start_idx:
+            raise ValueError("end_idx must be greater than start_idx")
+
+    def __repr__(self) -> str:  # noqa: D401
+        t0 = self.start_time.isoformat(timespec="milliseconds") + "Z"
+        t1 = self.end_time.isoformat(timespec="milliseconds") + "Z"
         return (
-            "Window("  # noqa: E501
-            f"idx={self.index}, "
-            f"start={self.start_time.isoformat(timespec='milliseconds')}Z, "
-            f"end={self.end_time.isoformat(timespec='milliseconds')}Z, "
-            f"len={self.duration:.3f}s)"
+            f"WindowAbs(idx={self.index}, start={t0}, end={t1}, len={self.duration})"
         )
 
 ###############################################################################
@@ -56,47 +74,29 @@ def _sliding_indices(npts: int, winlen_samples: int, hop: int) -> List[Tuple[int
     return pairs
 
 ###############################################################################
-# Main function
+# Main public helpers
 ###############################################################################
 
 def build_windows(
     *,
-    start_epoch: datetime,          # UTC timestamp of sample index 0
     dt: float,                      # sampling interval in seconds
     npts: int,                      # total number of samples per channel
     winlen: float,                  # window length in seconds (≥ dt)
     hop_ratio: float = 0.5,         # hop / window length ratio (0–1]
     skip_win_idx: Sequence[int] | None = None,
 ) -> List[Window]:
-    """Generate a list of `Window` metadata for a sliding‑window traversal.
+    """Return **relative** windows (indices only).
 
     Parameters
     ----------
-    start_epoch
-        UTC `datetime` corresponding to the very first sample (index 0).
-    dt
-        Sampling interval in seconds.
-    npts
-        Total number of samples per channel.
-    winlen
-        Desired window length **in seconds**. Internally converted to an
-        integer number of samples = ``round(winlen / dt)``.
-    hop_ratio
-        Fraction of the window length to advance per step.
-        Must satisfy ``0 < hop_ratio ≤ 1``. Default is 0.5 (50 % overlap).
-    skip_win_idx
-        Optional iterable of window indices (0‑based) to skip.
-
-    Returns
-    -------
-    List[Window]
-        Metadata for every retained window.
+    dt  : sampling interval (s)
+    npts: number of samples
+    winlen: desired window length (s)
+    hop_ratio: fraction of window length to advance
+    skip_win_idx: optional iterable of indices to drop
     """
 
     # ---------------- Sanity checks ----------------
-    if not isinstance(start_epoch, datetime):
-        raise TypeError("start_epoch must be a datetime object in UTC")
-
     if winlen <= 0:
         raise ValueError("winlen must be positive")
 
@@ -122,20 +122,33 @@ def build_windows(
     idx_pairs = _sliding_indices(npts, n_samples, hop)
     idx_pairs = [p for k, p in enumerate(idx_pairs) if k not in skip_set]
 
-    # ---------------- Metadata assembly ----------------
-    meta: List[Window] = []
-    for w, (s_idx, e_idx) in enumerate(idx_pairs):
-        start_time = start_epoch + timedelta(seconds=s_idx * dt)
-        end_time = start_epoch + timedelta(seconds=e_idx * dt)
-        meta.append(
-            Window(
-                index=w,
-                start_idx=s_idx,
-                end_idx=e_idx,
-                start_time=start_time,
-                end_time=end_time,
-                duration=(e_idx - s_idx) * dt,
+    # ---------------- Assembly ----------------
+    return [Window(index=w, start_idx=s, end_idx=e) for w, (s, e) in enumerate(idx_pairs)]
+
+
+def attach_times(
+    windows: List[Window],
+    *,
+    start_epoch: datetime,
+    dt: float,
+) -> List[WindowAbs]:
+    """Convert *relative* windows to *absolute‑time* windows.
+
+    This function leaves the original list untouched and returns a new list of
+    :class:`WindowAbs` instances.
+    """
+
+    out: List[WindowAbs] = []
+    for w in windows:
+        t0 = start_epoch + timedelta(seconds=w.start_idx * dt)
+        t1 = start_epoch + timedelta(seconds=w.end_idx * dt)
+        out.append(
+            WindowAbs(
+                index=w.index,
+                start_idx=w.start_idx,
+                end_idx=w.end_idx,
+                start_time=t0,
+                end_time=t1,
             )
         )
-
-    return meta
+    return out

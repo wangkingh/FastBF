@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Sequence, Callable
 from tqdm import tqdm
 import traceback
 from .windows import Window
-from .task import BfTask
+from .bftask import BfTask
 
 
 # ----------------------------------------------------------------------

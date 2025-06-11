@@ -28,7 +28,7 @@ from caponlib.sac_refactor import (
     write_sac_lists_by_time,
 )
 from caponlib.scheduler import run_parallel, run_serial
-from caponlib.windows import build_windows
+from caponlib.windows import build_windows,attach_times
 from caponlib.ias_capon import ias_capon  # ← 显式算法注入
 
 # ---------------- 全局控制开关 ----------------
@@ -36,7 +36,7 @@ VERBOSE: bool = False  # ← 关键信息输出开关（True 打印 / False 静�
 TEST_MODE: bool = False  # ← True 时仅打印 beam_cfg，不跑计算
 
 # ---------------- 固定配置文件 ----------------
-INI_FILE = Path("configs/desktop.ini")  # ← 只改这一行即可换配置
+INI_FILE = Path("configs/default.ini")  # ← 只改这一行即可换配置
 # ------------------------------------------------------------------- #
 if __name__ == "__main__":
     # ---------- logging ----------------------------------------------
@@ -76,43 +76,38 @@ if __name__ == "__main__":
     sac_lists = sorted(sac_list_dir.glob("*.txt"))
 
     # ---------- 2) 生成 meta window 列表 -----------------------------
-    sac_list_example = sac_lists[0]  # 任选一条即可
+    sac_list_example = sac_lists[0]
     with open(sac_list_example, "r") as f:
         sac_example = f.readline().strip()
-    stream_example = read(sac_example, headonly=True)  # 只读头，快
+    stream_example = read(sac_example, headonly=True)
 
     tr0 = stream_example[0]
-    start_epoch = tr0.stats.starttime.datetime  # UTC datetime
-    dt = float(tr0.stats.delta)
-    npts = int(tr0.stats.npts)
+    start_epoch = tr0.stats.starttime.datetime       # UTC datetime
+    dt           = float(tr0.stats.delta)
+    npts         = int(tr0.stats.npts)
 
+    # ★★★ 改动：不再传 start_epoch ★★★
     meta_windows = build_windows(
-        start_epoch=start_epoch,
-        dt=dt,
-        npts=npts,
-        winlen=window["win_len"],
-        hop_ratio=window["hop_ratio"],
-        skip_win_idx=window["skip_step"],
+        dt          = dt,
+        npts        = npts,
+        winlen      = window["win_len"],
+        hop_ratio   = window["hop_ratio"],
+        skip_win_idx= window["skip_step"],
     )
 
     # ----------- 仅在 VERBOSE 模式下预览前 5 个窗口 -------------------
     if VERBOSE:
-        from datetime import timezone, timedelta
-
-        start_epoch_utc = tr0.stats.starttime.datetime.replace(tzinfo=timezone.utc)
-
-        for idx, w in enumerate(meta_windows):
-            offset0 = timedelta(seconds=w.start_idx * dt)
-            offset1 = timedelta(seconds=w.end_idx * dt)
-
-            t0 = (start_epoch_utc + offset0).isoformat(timespec="seconds")
-            t1 = (start_epoch_utc + offset1).isoformat(timespec="seconds")
-
+        preview = attach_times(
+            meta_windows[:5],            # 前 5 个就够
+            start_epoch = start_epoch,
+            dt          = dt,
+        )
+        for w in preview:
             cfg_logger.info(
                 "  win[%d]: %s — %s  (len %.2fs)",
-                idx,
-                t0,
-                t1,
+                w.index,
+                w.start_time.isoformat(timespec="seconds"),
+                w.end_time.isoformat(timespec="seconds"),
                 (w.end_idx - w.start_idx) * dt,
             )
 

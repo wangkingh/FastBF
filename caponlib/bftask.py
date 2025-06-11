@@ -6,7 +6,7 @@ import logging
 import numpy as np
 
 from .utils     import array_xy,load_stream
-from .windows import Window
+from .windows import attach_times, Window
 
 ComputeFn = Callable[..., Dict[str, Any]]
 
@@ -21,17 +21,27 @@ class BfTask:
     compute_fn: ComputeFn | None = None     # None → dry-run
 
     # ------------------------------------------------------------------
-    def __post_init__(self) -> None:
-        if not self.windows:
-            raise ValueError("windows list is empty")
-
-        # 以第一个 Window 的 UTC 起始时间命名：YYYY-MM-DD-HH-MM.mat
-        ts = self.windows[0].start_time.strftime("%Y-%m-%d-%H-%M")
-        self.mat_out: Path = self.out_dir / f"{ts}.mat"
+    def __post_init__(self):
+        # 用 sac-list 文件名保证唯一
+        tag = self.sac_txt.stem          # 2025-03-28-13-00
+        self.mat_out = self.out_dir / f"{tag}.mat"
         self.mat_out.parent.mkdir(parents=True, exist_ok=True)
-
+        
     # ------------------------------------------------------------------
     def run(self, *, logger: logging.Logger) -> None:
+        
+        stream = load_stream(self.sac_txt)
+        tr0    = stream[0]
+        start_epoch = tr0.stats.starttime.datetime
+        dt          = float(tr0.stats.delta)
+
+        # ---------- 相对 → 绝对窗口 -----------------------------------
+        windows_abs = attach_times(
+            self.windows,
+            start_epoch=start_epoch,
+            dt=dt,
+        )
+        
         if self.compute_fn is None:   # dry-run
             logger.info(
                 "[Dry-run] %s | windows=%d | bands=%s | max_s=%.2f | "
@@ -49,7 +59,7 @@ class BfTask:
             stream     = stream,
             rx         = rx,
             ry         = ry,
-            windows    = self.windows,
+            windows    = windows_abs,
             bands      = self.bands,
             s_range    = self.slows,
             stack_size = self.stack_size,
