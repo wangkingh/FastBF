@@ -1,0 +1,52 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor-local settings
+.vscode/
+
+# Python packaging/build output
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# FastBF native build products
+bin/
+caponlib/bin/
+native/fastbf_native
+
+# Runtime outputs and local experiments
+fastbf_output/
+_codex_cli_test/
+artifacts/*
+!artifacts/README.md
+example/data/
+example/workspace/
+testing/
+testing/workspace*/
+testing/X2_2015_symlink_days/
+github_fastbf_zip/
+
+# Data products
+*.sac
+*.sacum
+*.mat
+*.npy
+*.png
+*.pdf
+*.pkl
+*.prof
+*.nsys-rep
+*.sqlite
+*.zip
+
+# Local user configs
+configs/local*.ini
+*.local.ini

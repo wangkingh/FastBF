@@ -1,34 +1,31 @@
-"""
-beamrunner – 驱动层：解析配置、准备数据、并行调度
-"""
+"""FastBF Python package."""
 
-# ── 配置 & SAC-list ─────────────────────────────────────────
-from .config_parser  import parse_and_validate, print_array_summary
-from .sac_refactor   import organise_sac_files, write_sac_lists_by_time
+from .config_parser import parse_and_validate, print_array_summary
 
-# ── 数据准备 (位于本包 io.py / geometry.py) ────────────────
-from .utils       import array_xy,load_stream
-
-# ── 任务 & 调度 ────────────────────────────────────────────
-from .bftask          import BfTask              # 先导入 Task，防循环依赖
-from .scheduler      import run_parallel
-from .windows import Window, build_windows
-
-from .ias_capon import ias_capon
 __all__ = [
-    # 配置
     "parse_and_validate",
     "print_array_summary",
-    # SAC-list
+    "inventory",
+    "prepare",
     "organise_sac_files",
-    "write_sac_lists_by_time",
-    # 数据
-    "load_stream",
-    "array_xy",
-    # 任务 / 调度
-    "BfTask",
-    "run_parallel",
-    "Window",
-    "windows",
-    "ias_capon",
+    "run_native",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"inventory", "prepare"}:
+        from .api import inventory, prepare
+
+        return {"inventory": inventory, "prepare": prepare}[name]
+
+    if name == "organise_sac_files":
+        from .source_scanner import organise_sac_files
+
+        return organise_sac_files
+
+    if name == "run_native":
+        from .native_runner import run_native
+
+        return run_native
+
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

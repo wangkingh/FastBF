@@ -1,9 +1,0 @@
-{
-    "files.associations": {
-        "*.cu": "cuda-cpp",
-        "*.h": "cpp",
-        "*.cuh": "cpp",
-        "*.cpp": "cpp",
-        "complex": "cpp"
-    }
-}

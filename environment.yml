@@ -1,21 +1,14 @@
-name: bf312
+name: fastbf
 channels:
   - conda-forge
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
+  - defaults
 dependencies:
-  - cython
-  - h5py
-  - ipython
-  - matplotlib
-  - netcdf4
-  - numba
+  - python=3.11
+  - pip
+  - setuptools
+  - wheel
   - numpy
-  - obspy
-  - pandas
-  - pybind11
-  - python=3.12
   - scipy
-  - seaborn
-  - tqdm
-prefix: /home/wjx/anaconda3/envs/bf312
+  - pandas
+  - matplotlib
+  - h5py

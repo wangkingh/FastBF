@@ -5,14 +5,16 @@ import configparser
 from datetime import datetime
 from pathlib import Path
 import re
-from typing import Dict, Tuple, List, Optional, Any, Union
+from typing import Dict, Tuple, List, Any, Union
 
 """
 Robust INI configuration parser/validator for FastBF.
 
 * Compatible with Python 3.7+ (thanks to `from __future__ import annotations`).
-* Sections expected: [general], [array], [window], [slowness_grid], [bandpass],
-  [device], [output], [logging].
+* Sections expected: [time_filter], [seisarray.*], [window],
+  [slowness_grid], [bands], [beamforming], [device], [output].
+* The core pipeline is single-band: run FastBF once per target frequency band.
+* The native runner owns the concrete on-disk result format.
 * Every mandatory key is validated; errors raise `RuntimeError`, leaving exit
   strategy to caller.
 """
@@ -29,9 +31,21 @@ def abort(msg: str) -> None:
     raise RuntimeError(msg)
 
 
-def path_exists(p: Union[str, Path], what: str) -> Path:
+def config_base_dir(cfg: configparser.ConfigParser) -> Path:
+    return getattr(cfg, "_fastbf_base_dir", Path.cwd())
+
+
+def resolve_config_path(p: Union[str, Path], base_dir: Path | None = None) -> Path:
+    """Resolve absolute paths normally and relative paths against config dir."""
+    path = Path(p).expanduser()
+    if not path.is_absolute() and base_dir is not None:
+        path = base_dir / path
+    return path.resolve()
+
+
+def path_exists(p: Union[str, Path], what: str, base_dir: Path | None = None) -> Path:
     """Return *p* as resolved Path if it exists, else abort."""
-    p = Path(p).expanduser().resolve()
+    p = resolve_config_path(p, base_dir)
     if not p.exists():
         abort(f"{what} not found: {p}")
     return p
@@ -64,80 +78,129 @@ def load_config(path: str | Path) -> configparser.ConfigParser:
 
     if not cfg.sections():
         abort("Configuration file contains no sections")
+    cfg._fastbf_base_dir = path.parent  # type: ignore[attr-defined]
     return cfg
 
 # ============================================================================
 # Individual section parsers
 # ============================================================================
 
-# --- [array] ----------------------------------------------------------------
-def maybe_path(s: str, label: str) -> str:
+# --- [time_filter] / [seisarray.*] -------------------------------------------
+def maybe_path(s: str, label: str, base_dir: Path | None = None) -> str:
     """
     Return a path string that downstream code can recognise, **preserving the
     literal sentinel 'NONE'** when requested.
 
-    * ``""``      → 依旧表示“配置里留空”
-    * ``"NONE"``  → 原样返回 'NONE'（或改成统一常量），让调用侧自行判断
-    * 其它内容    → 校验后返回合法绝对路径
+    * ``""``      -> normalized to 'NONE'
+    * ``"NONE"``  -> returned as 'NONE'
+    * other text   -> validated and returned as an absolute path
     """
     s_strip = s.strip()
 
-    # 1. 显式写了 NONE：直接返回大写常量（或项目统一的 _NONE_MARKER）
-    if s_strip.upper() == "NONE":
+    if not s_strip or s_strip.upper() == "NONE":
         return "NONE"
 
-    # 2. 否则按正常文件路径处理
-    return str(path_exists(s_strip, label))
+    return str(path_exists(s_strip, label, base_dir))
 
-def parse_array(cfg: configparser.ConfigParser) -> Dict[str, Any]:
-    """Parse [array] section and allow time_list / station_list = NONE / empty."""
-    sec = "array"
-    required = ("sac_dir", "pattern", "time_start", "time_end","component_list")
+def parse_time_filter(cfg: configparser.ConfigParser) -> Dict[str, Any]:
+    sec = "time_filter"
+    required = ("time_start", "time_end")
     for key in required:
         if not cfg.has_option(sec, key):
             abort(f"[{sec}] missing required key: {key}")
 
-    sac_dir      = cfg.get(sec, "sac_dir")
-    pattern      = cfg.get(sec, "pattern")
-    time_start   = cfg.get(sec, "time_start")
-    time_end     = cfg.get(sec, "time_end")
-    time_list    = cfg.get(sec, "time_list",    fallback="")
-    component_list = cfg.get(sec, "component_list").strip()
-    station_list = cfg.get(sec, "station_list", fallback="")
+    time_start = cfg.get(sec, "time_start").strip()
+    time_end = cfg.get(sec, "time_end").strip()
+    time_list = cfg.get(sec, "time_list", fallback="").strip()
 
-    name = cfg.get(sec, "name", fallback=cfg.get("general", "project", fallback="array"))
-
-    sac_path = path_exists(sac_dir, "SAC directory")
     check_timefmt(time_start, f"{sec}:time_start")
-    check_timefmt(time_end,   f"{sec}:time_end")
+    check_timefmt(time_end, f"{sec}:time_end")
 
     return {
-        "name": name,
-        "sac_dir": str(sac_path),
-        "pattern": pattern,
         "time_start": time_start,
         "time_end": time_end,
-        "time_list": maybe_path(time_list, "time_list file"),
-        "component_list":component_list,
-        "station_list": maybe_path(station_list, "station_list file"),
+        "time_list": maybe_path(time_list, "time_list file", config_base_dir(cfg)),
     }
+
+
+def parse_seisarrays(
+    cfg: configparser.ConfigParser,
+    time_filter: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    sections = _seisarray_sections(cfg)
+    if not sections:
+        abort("At least one [seisarray.*] section is required")
+
+    base_dir = config_base_dir(cfg)
+    arrays: List[Dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for sec in sections:
+        required = ("sac_dir", "pattern", "component_list")
+        for key in required:
+            if not cfg.has_option(sec, key):
+                abort(f"[{sec}] missing required key: {key}")
+
+        array_id = sec.split(".", 1)[1]
+        name = cfg.get(sec, "name", fallback=f"seisarray{array_id}").strip()
+        if not name:
+            abort(f"[{sec}] name cannot be empty")
+        if name in seen_names:
+            abort(f"Duplicate seisarray name: {name}")
+        seen_names.add(name)
+
+        component_list = cfg.get(sec, "component_list").strip()
+        if not component_list:
+            abort(f"[{sec}] component_list cannot be empty")
+
+        sac_path = path_exists(cfg.get(sec, "sac_dir"), f"{sec}:sac_dir", base_dir)
+        station_list = cfg.get(sec, "station_list", fallback="")
+        station_list_path = maybe_path(station_list, f"{sec}:station_list file", base_dir)
+
+        arrays.append(
+            {
+                "id": array_id,
+                "name": name,
+                "sac_dir": str(sac_path),
+                "pattern": cfg.get(sec, "pattern"),
+                "component_list": component_list,
+                "station_list": station_list_path,
+                "sta_list": station_list_path,
+                "time_start": time_filter["time_start"],
+                "time_end": time_filter["time_end"],
+                "time_list": time_filter["time_list"],
+            }
+        )
+    return arrays
+
+
+def _seisarray_sections(cfg: configparser.ConfigParser) -> List[str]:
+    sections = [sec for sec in cfg.sections() if sec.startswith("seisarray.")]
+
+    def sort_key(section: str) -> tuple[int, str]:
+        suffix = section.split(".", 1)[1]
+        if suffix.isdigit():
+            return (int(suffix), suffix)
+        return (10**9, suffix)
+
+    return sorted(sections, key=sort_key)
 
 # --- [window] ---------------------------------------------------------------
 
 def parse_window(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     sec = "window"
-    must_int  = ("win_len", "stack_size", "min_stations")
-    must_float= ("hop_ratio",)
+    must_int  = ("win_len", "shift_len")
     
-    for key in (*must_int, *must_float):
+    for key in must_int:
         if not cfg.has_option(sec, key):
             abort(f"[{sec}] missing required key: {key}")
+    if cfg.has_option(sec, "min_stations"):
+        abort("[window] min_stations moved to [quality_filter]")
+    if not cfg.has_option(sec, "skip_step"):
+        abort(f"[{sec}] missing required key: skip_step")
 
-    geti = cfg.getint; getf = cfg.getfloat; getb = cfg.getboolean
+    geti = cfg.getint
     win_len    = geti(sec, "win_len")
-    hop_ratio    = getf(sec, "hop_ratio")
-    stack_size   = geti(sec, "stack_size")
-    min_stations = geti(sec, "min_stations")
+    shift_len  = geti(sec, "shift_len")
 
     # 解析 skip_step，禁止留空，只能是 NONE 或列表
     skip_raw = cfg.get(sec, "skip_step").strip()
@@ -155,20 +218,24 @@ def parse_window(cfg: configparser.ConfigParser) -> Dict[str, Any]:
         
     if win_len <= 0:
         abort("[window] win_len must be positive")
-    if not (0.0 < hop_ratio <= 1.0):
-        abort("[window] hop_ratio must be in (0,1]")
-    if stack_size < 1:
-        abort("[window] stack_size must be ≥ 1")
-    if min_stations <= 0:
-        abort("[window] min_stations must be positive")
-
+    if shift_len <= 0:
+        abort("[window] shift_len must be positive")
     data = locals().copy()
     for k in (
-        "cfg", "sec", "must_int", "must_float", "must_bool",
-        "opt_list_int", "geti", "getf", "getb", "skip_raw","key"
+        "cfg", "sec", "must_int", "geti", "skip_raw","key"
     ):
         data.pop(k, None)
     return data
+
+
+# --- [quality_filter] --------------------------------------------------------
+
+def parse_quality_filter(cfg: configparser.ConfigParser) -> Dict[str, Any]:
+    sec = "quality_filter"
+    min_stations = cfg.getint(sec, "min_stations", fallback=-1)
+    if min_stations <= 0:
+        abort("[quality_filter] min_stations must be positive")
+    return {"min_stations": min_stations}
 
 # --- [slowness_grid] ---------------------------------------------------------
 
@@ -213,14 +280,13 @@ def _parse_single_band(pair: str) -> Tuple[float, float]:
 # Public API
 # ---------------------------------------------------------------------------
 def parse_bandpass(cfg: configparser.ConfigParser) -> List[Tuple[float, float]]:
-    """Return a list of (fmin, fmax) tuples from the [bandpass] section.
+    """Return one target (fmin, fmax) tuple from the [bands] section.
 
     Accepted INI formats:
         [bands]
-        bands = 0.1/1.0, 0.8/3.0, 2.5/5.0  # preferred
+        bands = 0.1/1.0
 
-    Validation applied **only within each band** (fmin > 0, fmax > 0, fmin < fmax).
-    Adjacent or overlapping bands are allowed; their ordering is preserved as given.
+    Multi-band sweeps should be handled by launching FastBF once per band.
     """
 
     sec = "bands"
@@ -230,6 +296,8 @@ def parse_bandpass(cfg: configparser.ConfigParser) -> List[Tuple[float, float]]:
     bands_str = cfg.get(sec, "bands", fallback="").strip()
 
     raw_pairs = [p.strip() for p in bands_str.split(',') if p.strip()]
+    if len(raw_pairs) != 1:
+        abort("[bands] exactly one target band is supported; run FastBF once per band")
     bands = [_parse_single_band(p) for p in raw_pairs]
 
     return bands
@@ -239,36 +307,56 @@ def parse_device(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     sec = "device"
     ids_raw = cfg.get(sec, "ids", fallback="")
     procs_per_gpu = cfg.getint(sec, "procs_per_gpu", fallback=-1)
-    cpu_num = cfg.getint(sec, "cpu_num", fallback=-1)
+    cpu_worker_num = cfg.getint(sec, "cpu_worker_num", fallback=-1)
     ids = parse_list_of_ints(ids_raw)
     if not ids:
         abort("[device] ids must list at least one GPU id")
     if len(set(ids)) != len(ids):
         abort("[device] ids contains duplicates")
-    if procs_per_gpu <= 0 or cpu_num <= 0:
-        abort("[device] procs_per_gpu and cpu_num must be positive")
-    return {"ids": ids, "procs_per_gpu": procs_per_gpu, "cpu_num": cpu_num}
+    if procs_per_gpu <= 0 or cpu_worker_num <= 0:
+        abort("[device] procs_per_gpu and cpu_worker_num must be positive")
+    return {
+        "ids": ids,
+        "procs_per_gpu": procs_per_gpu,
+        "cpu_worker_num": cpu_worker_num,
+    }
 
 # --- [output] ----------------------------------------------------------------
 
-def parse_output(cfg: configparser.ConfigParser) -> Dict[str, Path]:
+def parse_output(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     sec = "output"
     out_dir = cfg.get(sec, "dir", fallback="").strip()
     if not out_dir:
         abort("[output] dir is required")
-    out_path = Path(out_dir).expanduser().resolve()
+    if cfg.has_option(sec, "format"):
+        abort("[output] format is controlled by the native runner; remove the format key")
+    out_path = resolve_config_path(out_dir, config_base_dir(cfg))
     out_path.mkdir(parents=True, exist_ok=True)
-    return {"dir": out_path}
+    return {"dir": out_path, "format": "native-controlled"}
 
-# --- [logging] ---------------------------------------------------------------
 
-def parse_logging(cfg: configparser.ConfigParser) -> Dict[str, str]:
-    sec = "logging"
-    level = cfg.get(sec, "level", fallback="INFO").upper()
-    if level not in logging._nameToLevel:
-        abort(f"[logging] invalid log level '{level}'")
-    log_file = cfg.get(sec, "file", fallback="")
-    return {"level": level, "file": log_file}
+# --- [beamforming] -----------------------------------------------------------
+
+def parse_beamforming(cfg: configparser.ConfigParser) -> Dict[str, Any]:
+    sec = "beamforming"
+    method = cfg.get(sec, "method", fallback="capon").strip().lower()
+    mode = cfg.get(sec, "mode", fallback="stack").strip().lower()
+    group_windows = cfg.getint(sec, "group_windows", fallback=0)
+
+    if method not in {"capon", "bartlett", "both"}:
+        abort("[beamforming] method must be 'capon', 'bartlett', or 'both'")
+    if mode not in {"stack", "grouped", "window"}:
+        abort("[beamforming] mode must be 'stack', 'grouped', or 'window'")
+    if mode == "window":
+        group_windows = 1
+    elif mode == "grouped":
+        if group_windows <= 0:
+            abort("[beamforming] mode=grouped requires positive group_windows")
+    elif group_windows < 0:
+        abort("[beamforming] group_windows must be non-negative")
+
+    return {"method": method, "mode": mode, "group_windows": group_windows}
+
 
 # ============================================================================
 # Master parser
@@ -276,39 +364,46 @@ def parse_logging(cfg: configparser.ConfigParser) -> Dict[str, str]:
 
 def parse_and_validate(path: str | Path) -> Tuple[Dict, ...]:
     cfg = load_config(path)
-    parsers = (
-        parse_array, parse_window, parse_slowness,
-        parse_bandpass, parse_device, parse_output, parse_logging,
+    time_filter = parse_time_filter(cfg)
+    arrays = parse_seisarrays(cfg, time_filter)
+    return (
+        arrays,
+        time_filter,
+        parse_quality_filter(cfg),
+        parse_window(cfg),
+        parse_slowness(cfg),
+        parse_bandpass(cfg),
+        parse_device(cfg),
+        parse_output(cfg),
+        parse_beamforming(cfg),
     )
-    return tuple(p(cfg) for p in parsers)  # type: ignore[return-value]
 
 # ============================================================================
 # Utility: pretty print array summary
 # ============================================================================
 
-def print_array_summary(arr: Dict[str, Any]) -> None:
+def print_array_summary(arrays: List[Dict[str, Any]], time_filter: Dict[str, Any]) -> None:
     logger.info("-" * 60)
     logger.info(" ARRAY SUMMARY")
-    logger.info("%-15s: %s", "Name", arr["name"])
-    logger.info("%-15s: %s", "SAC dir", arr["sac_dir"])
-    logger.info("%-15s: %s → %s", "Time", arr["time_start"], arr["time_end"])
-    if arr["station_list"]:
-        logger.info("%-15s: %s", "Station list", arr["station_list"])
-    if arr["time_list"]:
-        logger.info("%-15s: %s", "Time list", arr["time_list"])
-    logger.info("Pattern: %s", arr["pattern"])
+    logger.info("%-15s: %s -> %s", "Time", time_filter["time_start"], time_filter["time_end"])
+    logger.info("%-15s: %s", "Time list", time_filter["time_list"])
+    for arr in arrays:
+        logger.info("[%s] %s", arr["id"], arr["name"])
+        logger.info("  %-13s: %s", "SAC dir", arr["sac_dir"])
+        logger.info("  %-13s: %s", "Station list", arr["station_list"])
+        logger.info("  %-13s: %s", "Components", arr["component_list"])
+        logger.info("  Pattern: %s", arr["pattern"])
     logger.info("-" * 60)
 
 # ============================================================================
 # CLI driver for ad-hoc testing
 # ============================================================================
 
-def _configure_root_logger(level: str, logfile: str) -> None:
+def _configure_root_logger() -> None:
     logging.basicConfig(
-        level=logging._nameToLevel[level],
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        filename=(logfile or None),
     )
 
 if __name__ == "__main__":
@@ -318,18 +413,26 @@ if __name__ == "__main__":
 
     ini_file = sys.argv[1]
     try:
-        # first pass – configure root logger as early as possible
-        tmp_cfg = load_config(ini_file)
-        log_sec = tmp_cfg["logging"] if "logging" in tmp_cfg else {}
-        _configure_root_logger(log_sec.get("level", "INFO"), log_sec.get("file", ""))
+        _configure_root_logger()
 
         # full validation
-        (general, array, window, slowness, bandpass,device, output, logging_cfg) = parse_and_validate(ini_file)
+        (
+            arrays,
+            time_filter,
+            quality_filter,
+            window,
+            slowness,
+            bands,
+            device,
+            output,
+            beamforming,
+        ) = parse_and_validate(ini_file)
 
         logger.info("Configuration parsed OK.")
-        print_array_summary(array)
+        print_array_summary(arrays, time_filter)
         logger.debug("Sections sizes: %s", [len(x) for x in (
-            general, array, window, slowness, bandpass, device, output, logging_cfg)])
+            arrays, time_filter, quality_filter, window, slowness, bands, device, output,
+            beamforming)])
     except RuntimeError:
         # already logged at ERROR level inside parser helpers
         sys.exit(1)
