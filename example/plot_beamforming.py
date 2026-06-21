@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -13,16 +14,31 @@ TARGET_PLOT = WORKSPACE / "plots" / "capon_bartlett_db.png"
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Plot FastBF Capon/Bartlett NPY outputs.")
+    parser.add_argument("--workspace", type=Path, default=WORKSPACE)
+    parser.add_argument("--timestamp", default=TIMESTAMP_STEM)
+    parser.add_argument("--s-range", type=float, default=4.0)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    workspace = args.workspace.expanduser().resolve()
+    output = args.output or workspace / "plots" / "capon_bartlett_db.png"
     plot_outputs(
-        WORKSPACE / "bf" / f"{TIMESTAMP_STEM}_capon.npy",
-        WORKSPACE / "bf" / f"{TIMESTAMP_STEM}_bartlett.npy",
-        TARGET_PLOT,
+        workspace / "bf" / f"{args.timestamp}_capon.npy",
+        workspace / "bf" / f"{args.timestamp}_bartlett.npy",
+        output,
+        s_range=args.s_range,
     )
-    print(f"plot: {TARGET_PLOT}")
+    print(f"plot: {output}")
     return 0
 
 
-def plot_outputs(capon_path: Path, bartlett_path: Path, output: Path) -> None:
+def plot_outputs(
+    capon_path: Path,
+    bartlett_path: Path,
+    output: Path,
+    *,
+    s_range: float = 4.0,
+) -> None:
     if not capon_path.exists() or not bartlett_path.exists():
         raise SystemExit(
             "FastBF output was not created. Expected:\n"
@@ -39,7 +55,7 @@ def plot_outputs(capon_path: Path, bartlett_path: Path, output: Path) -> None:
 
     capon = display_db(capon_path)
     bartlett = display_db(bartlett_path)
-    extent = [-4.0, 4.0, -4.0, 4.0]
+    extent = [-s_range, s_range, -s_range, s_range]
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 5.0), constrained_layout=True)
     for ax, title, data in (
         (axes[0], "Capon dB", capon),

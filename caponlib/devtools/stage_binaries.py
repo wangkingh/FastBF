@@ -7,7 +7,7 @@ import stat
 from pathlib import Path
 
 
-DEFAULT_BINARIES = ("fastbf_native",)
+DEFAULT_BINARIES = ("fastbf_native", "fastbf_native_power")
 
 
 def platform_tag() -> str:

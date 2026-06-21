@@ -74,6 +74,7 @@ def doctor(config_path: str | Path | None = None) -> list[tuple[str, str]]:
             rows.append(("min_stations", str(quality_filter["min_stations"])))
             rows.append(("output_dir", str(output["dir"])))
             rows.append(("output_format", str(output["format"])))
+            rows.append(("backend", str(beamforming["backend"])))
             rows.append(("method", str(beamforming["method"])))
             rows.append(("mode", str(beamforming["mode"])))
             if beamforming["mode"] == "grouped":

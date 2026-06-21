@@ -124,7 +124,7 @@ def ensure_build_deps(env: dict[str, str]) -> None:
 def build_native_and_stage(args: argparse.Namespace, env: dict[str, str]) -> None:
     make = shutil.which("make")
     if not make:
-        raise SystemExit("`make` is required to build fastbf_native; rerun with --skip-native to skip it")
+        raise SystemExit("`make` is required to build native backends; rerun with --skip-native to skip it")
     make_cmd = [
         make,
         "-C",
@@ -271,8 +271,11 @@ def smoke_test(env: dict[str, str]) -> None:
     code = r"""
 from caponlib.system import find_packaged_executable
 native = find_packaged_executable(("fastbf_native",))
+native_power = find_packaged_executable(("fastbf_native_power",))
 assert native is not None, "fastbf_native not found"
+assert native_power is not None, "fastbf_native_power not found"
 print("fastbf_native:", native)
+print("fastbf_native_power:", native_power)
 print("smoke: OK")
 """
     run([sys.executable, "-c", code], env=env)

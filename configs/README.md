@@ -5,6 +5,8 @@ real data:
 
 ```text
 configs/default.ini
+configs/default_20150101.ini
+configs/power_deleted_20150101.ini
 configs/desktop.ini
 configs/server.ini
 ```
@@ -23,14 +25,17 @@ Beamforming output cadence is controlled by `[beamforming] mode`:
 [window]
 win_len = 1800
 shift_len = 1800
+taper = tukey         ; tukey, hann, or none
+taper_alpha = 0.05    ; used only when taper = tukey
 
 [beamforming]
-method = both          ; capon, bartlett, or both
+backend = reference    ; reference or power
+method = both          ; reference: capon, bartlett, both; power: raw, deleted, both
 mode = grouped         ; stack, grouped, or window
 group_windows = 4      ; 4 * 1800 s = one result every 2 hours
 ```
 
-Native grouped output writes one file per output frame and method:
+The `reference` backend writes Capon and channel-equalized Bartlett outputs:
 
 ```text
 2015-01-01-00-00_g0000_capon.npy
@@ -39,5 +44,17 @@ Native grouped output writes one file per output frame and method:
 2015-01-01-02-00_g0001_bartlett.npy
 ```
 
+The `power` backend writes power-preserving Bartlett variants:
+
+```text
+2015-01-01-00-00_g0000_bartlett_raw.npy
+2015-01-01-00-00_g0000_bartlett_channel_deleted.npy
+```
+
 The timestamp is the start time of the first base window in that group. The
 last group is written even if it contains fewer than `group_windows` windows.
+
+The default short Tukey taper (`taper = tukey`, `taper_alpha = 0.05`) keeps the
+old rectangular-window behavior close while avoiding hard window edges. Use
+`taper = none` only when comparing against older runs that intentionally used
+untapered windows.

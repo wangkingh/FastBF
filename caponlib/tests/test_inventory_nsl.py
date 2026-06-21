@@ -5,6 +5,7 @@ import importlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 inventory = importlib.import_module("caponlib.inventory")
@@ -53,6 +54,28 @@ class InventoryNslTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(RuntimeError, "Duplicate SAC trace"):
                 inventory._write_timestamp_tsvs(rows, Path(tmp), min_stations=1)
+
+    def test_station_geometry_reads_one_header_per_station(self) -> None:
+        rows = {
+            "2026-01-01-00-00": [
+                _row("AAA", "", sac_path="/tmp/AAA_2.sac"),
+                _row("BBB", "", sac_path="/tmp/BBB_1.sac"),
+            ],
+            "2026-01-02-00-00": [
+                _row("AAA", "", sac_path="/tmp/AAA_1.sac"),
+            ],
+        }
+        calls: list[str] = []
+
+        def fake_read(path: str):
+            calls.append(path)
+            return inventory._StationGeo(1.0, 2.0, 3.0, True, source_path=path)
+
+        with patch.object(inventory, "_read_station_geo_from_sac_header", side_effect=fake_read):
+            nodes = inventory._build_nsl_nodes(rows)
+
+        self.assertEqual(["/tmp/AAA_1.sac", "/tmp/BBB_1.sac"], calls)
+        self.assertEqual([1.0, 1.0], [node.lat for node in nodes])
 
 
 def _row(

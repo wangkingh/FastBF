@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .patterns import CompiledPattern, match_path, parse_timestamp
+from .progress import progress
 
 logger = logging.getLogger(__name__)
 
@@ -24,10 +26,18 @@ class FileMatcher:
         file_list: list[str] = []
         root = Path(self.directory).expanduser()
         logger.info("Searching for files in %s", root)
+        progress(f"scanning files under {root}")
+        start = time.monotonic()
+        next_report = 50000
         for path in root.rglob("*"):
             if path.is_file():
                 file_list.append(str(path.resolve()))
+                if len(file_list) >= next_report:
+                    elapsed = time.monotonic() - start
+                    progress(f"found {len(file_list):,} file(s) so far under {root} ({elapsed:.1f}s)")
+                    next_report += 50000
         logger.info("Finish. %d files found in %s", len(file_list), root)
+        progress(f"finished scanning {root}: {len(file_list):,} file(s) found")
         return file_list
 
     def match_files(
@@ -38,6 +48,7 @@ class FileMatcher:
         if file_paths is None:
             file_paths = self.get_files()
         logger.info("Start file pattern matching...")
+        progress(f"matching {len(file_paths):,} path(s) with {num_threads} worker(s)")
 
         if num_threads <= 1:
             results = [self._match_file(path) for path in file_paths]
@@ -47,6 +58,7 @@ class FileMatcher:
 
         matched = [result for result in results if result]
         logger.info("%d files matched.", len(matched))
+        progress(f"matched {len(matched):,} SAC path(s)")
         return matched
 
     def _match_file(self, file_path: str) -> Optional[Dict]:
@@ -107,6 +119,7 @@ class FileFilter:
     def filter_files(self, file_list: List[Dict]) -> List[Dict]:
         if not file_list:
             return []
+        progress(f"filtering {len(file_list):,} matched path(s) with {self.num_threads} worker(s)")
         if self.num_threads <= 1:
             valid_flags = [self._is_valid_file(item) for item in file_list]
         else:
@@ -116,6 +129,7 @@ class FileFilter:
             file_info for file_info, is_valid in zip(file_list, valid_flags) if is_valid
         ]
         logger.info("filtering finished, %d files passed.", len(filtered))
+        progress(f"filtering finished: {len(filtered):,} path(s) kept")
         return filtered
 
     def _is_valid_file(self, file_info: Dict) -> bool:

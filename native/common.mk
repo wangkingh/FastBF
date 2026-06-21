@@ -33,3 +33,4 @@ OPT_NVCCFLAGS ?= -O3 --use_fast_math --generate-line-info
 WARN_CXXFLAGS ?= -Wall -Wextra -pedantic
 CXX_STD ?= -std=c++17
 NVCC_STD ?= -std=c++17
+STD_FILESYSTEM_LIBS ?= -lstdc++fs

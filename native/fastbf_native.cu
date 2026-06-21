@@ -309,6 +309,8 @@ struct Options {
     float fmax = std::numeric_limits<float>::quiet_NaN();
     double win_len = 0.0;
     double shift_len = 0.0;
+    std::string taper = "tukey";
+    double taper_alpha = 0.05;
     int record_samples = 0;
     double record_seconds = 0.0;
     float s_range = 0.0f;
@@ -942,20 +944,31 @@ ListPlan build_list_plan(const std::string &saclist_path,
     ListPlan plan;
     plan.saclist_path = saclist_path;
     plan.rows = read_saclist(saclist_path);
-    plan.headers = read_headers(plan.rows);
+    if (opt.plan_only)
+    {
+        plan.headers.push_back(parse_sac_header(plan.rows.front().path));
+    }
+    else
+    {
+        plan.headers = read_headers(plan.rows);
+    }
+    const SacHeader &shape_header = plan.headers.front();
     if (opt.record_samples > 0)
     {
         plan.common_npts = opt.record_samples;
     }
     else if (opt.record_seconds > 0.0)
     {
-        plan.common_npts = py_round(opt.record_seconds / plan.headers.front().delta);
+        plan.common_npts = py_round(opt.record_seconds / shape_header.delta);
     }
     else
     {
-        plan.common_npts = plan.headers.front().npts;
-        for (const auto &header : plan.headers)
-            plan.common_npts = std::min(plan.common_npts, header.npts);
+        plan.common_npts = shape_header.npts;
+        if (!opt.plan_only)
+        {
+            for (const auto &header : plan.headers)
+                plan.common_npts = std::min(plan.common_npts, header.npts);
+        }
     }
     for (const auto &header : plan.headers)
     {
@@ -964,7 +977,7 @@ ListPlan build_list_plan(const std::string &saclist_path,
                                      header.path);
     }
     plan.nr = static_cast<int>(plan.rows.size());
-    plan.dt = plan.headers.front().delta;
+    plan.dt = shape_header.delta;
     plan.windows = build_windows(plan.common_npts, plan.dt,
                                  opt.win_len, opt.shift_len);
     plan.nwin = static_cast<int>(plan.windows.size());
@@ -973,7 +986,7 @@ ListPlan build_list_plan(const std::string &saclist_path,
     return plan;
 }
 
-std::vector<double> hanning(int nsamp)
+std::vector<double> build_taper(int nsamp, const std::string &mode, double alpha)
 {
     std::vector<double> taper(nsamp);
     if (nsamp == 1)
@@ -981,18 +994,99 @@ std::vector<double> hanning(int nsamp)
         taper[0] = 1.0;
         return taper;
     }
-    for (int i = 0; i < nsamp; ++i)
-        taper[i] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / (nsamp - 1));
-    return taper;
+    if (mode == "none")
+    {
+        std::fill(taper.begin(), taper.end(), 1.0);
+        return taper;
+    }
+    if (mode == "hann")
+    {
+        for (int i = 0; i < nsamp; ++i)
+            taper[i] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / (nsamp - 1));
+        return taper;
+    }
+    if (mode == "tukey")
+    {
+        if (alpha <= 0.0)
+        {
+            std::fill(taper.begin(), taper.end(), 1.0);
+            return taper;
+        }
+        if (alpha >= 1.0)
+        {
+            for (int i = 0; i < nsamp; ++i)
+                taper[i] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / (nsamp - 1));
+            return taper;
+        }
+        for (int i = 0; i < nsamp; ++i)
+        {
+            double x = static_cast<double>(i) / static_cast<double>(nsamp - 1);
+            if (x < alpha / 2.0)
+                taper[i] = 0.5 * (1.0 + std::cos(kPi * (2.0 * x / alpha - 1.0)));
+            else if (x <= 1.0 - alpha / 2.0)
+                taper[i] = 1.0;
+            else
+                taper[i] = 0.5 * (1.0 + std::cos(kPi * (2.0 * x / alpha - 2.0 / alpha + 1.0)));
+        }
+        return taper;
+    }
+    throw std::runtime_error("unsupported taper mode: " + mode);
+}
+
+std::string taper_description(const Options &opt)
+{
+    std::ostringstream oss;
+    oss << opt.taper;
+    if (opt.taper == "tukey")
+        oss << "(alpha=" << opt.taper_alpha << ")";
+    return oss.str();
+}
+
+double taper_power_seconds(int nsamp, double dt, const std::string &mode, double alpha)
+{
+    auto taper = build_taper(nsamp, mode, alpha);
+    double sum_sq = 0.0;
+    for (double value : taper)
+        sum_sq += value * value;
+    return sum_sq * dt;
+}
+
+double taper_amplitude_seconds(int nsamp, double dt, const std::string &mode, double alpha)
+{
+    auto taper = build_taper(nsamp, mode, alpha);
+    double sum = 0.0;
+    for (double value : taper)
+        sum += value;
+    return sum * dt;
+}
+
+std::vector<double> window_taper(int nsamp, const Options &opt)
+{
+    return build_taper(nsamp, opt.taper, opt.taper_alpha);
+}
+
+void normalize_taper_options(Options &opt)
+{
+    std::transform(opt.taper.begin(), opt.taper.end(), opt.taper.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (opt.taper == "hanning")
+        opt.taper = "hann";
+    else if (opt.taper == "rect" || opt.taper == "rectangular" || opt.taper == "boxcar")
+        opt.taper = "none";
+    if (opt.taper != "hann" && opt.taper != "tukey" && opt.taper != "none")
+        throw std::runtime_error("--taper must be hann, tukey, or none");
+    if (opt.taper == "tukey" && !(opt.taper_alpha > 0.0 && opt.taper_alpha <= 1.0))
+        throw std::runtime_error("--tukey-alpha must be in (0, 1]");
 }
 
 std::vector<double> build_window_stack(const std::vector<float> &matrix,
                                        int nr, int npts,
-                                       const std::vector<std::pair<int, int>> &windows)
+                                       const std::vector<std::pair<int, int>> &windows,
+                                       const Options &opt)
 {
     int nwin = static_cast<int>(windows.size());
     int nsamp = windows.front().second - windows.front().first;
-    auto taper = hanning(nsamp);
+    auto taper = window_taper(nsamp, opt);
     std::vector<double> out(static_cast<std::size_t>(nwin) * nr * nsamp);
     for (int w = 0; w < nwin; ++w)
     {
@@ -1436,6 +1530,10 @@ Options parse_args(int argc, char **argv)
             opt.win_len = p.first;
             opt.shift_len = p.second;
         }
+        else if (arg == "--taper")
+            opt.taper = trim(need(arg));
+        else if (arg == "--tukey-alpha")
+            opt.taper_alpha = std::stod(need(arg));
         else if (arg == "--record-samples")
             opt.record_samples = std::stoi(need(arg));
         else if (arg == "--record-seconds")
@@ -1471,6 +1569,7 @@ Options parse_args(int argc, char **argv)
                          "-B fmin/fmax -W win/shift -S range/res "
                          "[--mode stack|grouped|window] "
                          "[--group-windows N] "
+                         "[--taper hann|tukey|none] [--tukey-alpha A] "
                          "[--method capon|bartlett|both] "
                          "[--steering-cache auto|none|host|device] "
                          "[--plan-only] [--profile]\n";
@@ -1488,6 +1587,7 @@ Options parse_args(int argc, char **argv)
     lowercase_inplace(opt.method);
     lowercase_inplace(opt.mode);
     lowercase_inplace(opt.steering_cache);
+    normalize_taper_options(opt);
     if (opt.method != "capon" && opt.method != "bartlett" && opt.method != "both")
         throw std::runtime_error("fastbf_native supports method capon, bartlett, or both");
     if (opt.mode != "stack" && opt.mode != "grouped" && opt.mode != "window")
@@ -2108,16 +2208,6 @@ void run_beamforming_chunk(DeviceArena &arena, const PersistentDevice &persisten
         d_sm, sm_total, 1.0f / static_cast<float>(nwin));
     CUDA_CHECK(cudaGetLastError());
 
-    dim3 grid_w((nr + block.x - 1) / block.x, (n_bins + block.y - 1) / block.y, 1);
-    compute_w<<<grid_w, block>>>(d_sm, chunk.fave(), nr, d_w);
-    compute_sm_weighted<<<grid, block>>>(d_sm, d_w, chunk.fave(), nr);
-    CUDA_CHECK(cudaGetLastError());
-    if (profile)
-    {
-        CUDA_CHECK(cudaDeviceSynchronize());
-        profile->covariance_ms += elapsed_ms(cov_post_start);
-    }
-
     dim3 block_fk(8, 8, 1);
     dim3 grid_fk((nk + block_fk.x - 1) / block_fk.x,
                  (nk + block_fk.y - 1) / block_fk.y, 1);
@@ -2131,6 +2221,16 @@ void run_beamforming_chunk(DeviceArena &arena, const PersistentDevice &persisten
             profile->d2h_ms += elapsed_ms(d2h_start);
         add_inplace(*target, chunk_tfk);
     };
+
+    dim3 grid_w((nr + block.x - 1) / block.x, (n_bins + block.y - 1) / block.y, 1);
+    compute_w<<<grid_w, block>>>(d_sm, chunk.fave(), nr, d_w);
+    compute_sm_weighted<<<grid, block>>>(d_sm, d_w, chunk.fave(), nr);
+    CUDA_CHECK(cudaGetLastError());
+    if (profile)
+    {
+        CUDA_CHECK(cudaDeviceSynchronize());
+        profile->covariance_ms += elapsed_ms(cov_post_start);
+    }
 
     if (do_bartlett)
     {
@@ -2330,6 +2430,12 @@ void run(const Options &opt)
             select_tau_for_rows(geometry, plan.rows, persistent, plan.nr, nk,
                                 opt.profile ? &list_profile : nullptr);
         }
+        std::cerr << "[fastbf_native] taper=" << taper_description(opt)
+                  << " amplitude_seconds="
+                  << taper_amplitude_seconds(plan.nsamp, plan.dt, opt.taper, opt.taper_alpha)
+                  << " power_seconds="
+                  << taper_power_seconds(plan.nsamp, plan.dt, opt.taper, opt.taper_alpha)
+                  << "\n";
 
         auto read_start = Clock::now();
         auto matrix = read_data_matrix(plan.headers, plan.common_npts);
@@ -2337,7 +2443,7 @@ void run(const Options &opt)
             list_profile.read_ms += elapsed_ms(read_start);
         auto window_start = Clock::now();
         auto window_stack = build_window_stack(matrix, plan.nr,
-                                               plan.common_npts, plan.windows);
+                                               plan.common_npts, plan.windows, opt);
         if (opt.profile)
             list_profile.window_ms += elapsed_ms(window_start);
         auto ft_selected = run_fft_selected(

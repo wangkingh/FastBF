@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .config_parser import parse_and_validate
+from .progress import progress
 
 
 TIMESTAMP_TSV_FIELDS = [
@@ -235,36 +236,62 @@ def _build_inventory_from_sections(
     del time_filter, window, slow, bands, beamforming
     workspace = Path(output["dir"]).expanduser().resolve()
     sac_list_dir = workspace / "saclist"
+    progress(f"preparing workspace {workspace}")
 
     if clean:
+        progress("cleaning previous inventory outputs")
         _clean_inventory_outputs(workspace, sac_list_dir)
 
     workspace.mkdir(parents=True, exist_ok=True)
     sac_list_dir.mkdir(parents=True, exist_ok=True)
     snapshot = _write_config_snapshot(ini_file, workspace)
+    progress(f"wrote config snapshot to {snapshot}")
 
     from .source_scanner import organise_sac_files
 
     rows_by_timestamp: dict[str, list[dict[str, str]]] = {}
-    for array in arrays:
+    for array_index, array in enumerate(arrays, start=1):
         array_name = _array_label(array)
+        progress(
+            f"array {array_index}/{len(arrays)} {array_name}: "
+            f"scanning {array.get('sac_dir', 'NONE')}"
+        )
         files_group = organise_sac_files(array, cpu_count=device["cpu_worker_num"])
+        array_rows = 0
         for time_key, info in files_group.items():
             timestamp = _label_from_key(time_key)
-            rows_by_timestamp.setdefault(timestamp, []).extend(
-                _rows_from_group_info(
-                    info,
-                    timestamp=timestamp,
-                    array_name=array_name,
-                )
+            rows = _rows_from_group_info(
+                info,
+                timestamp=timestamp,
+                array_name=array_name,
             )
+            array_rows += len(rows)
+            rows_by_timestamp.setdefault(timestamp, []).extend(
+                rows
+            )
+        progress(
+            f"array {array_index}/{len(arrays)} {array_name}: "
+            f"{len(files_group):,} timestamp group(s), {array_rows:,} row(s)"
+        )
 
+    grouped_rows = sum(len(rows) for rows in rows_by_timestamp.values())
+    progress(f"building station catalog from {grouped_rows:,} grouped row(s)")
     nsl_nodes = _build_nsl_nodes(rows_by_timestamp)
     _attach_nsl_ids(rows_by_timestamp, nsl_nodes)
     nsl_catalog = _write_nsl_catalog(workspace / "nsl_catalog.tsv", nsl_nodes)
+    progress(f"wrote station catalog: {len(nsl_nodes):,} station(s) -> {nsl_catalog}")
 
     min_stations = int(quality_filter["min_stations"])
+    progress(
+        f"writing timestamp SAC lists to {sac_list_dir} "
+        f"(min_stations={min_stations})"
+    )
     summary = _write_timestamp_tsvs(rows_by_timestamp, sac_list_dir, min_stations)
+    progress(
+        "wrote "
+        f"{summary['sac_lists']:,} SAC list(s), "
+        f"{summary['sac_rows']:,} SAC row(s)"
+    )
     if summary["sac_lists"] == 0:
         raise RuntimeError(f"No SAC list TSV files were generated under {sac_list_dir}")
 
@@ -293,7 +320,6 @@ def _build_nsl_nodes(
             {
                 "components": set(),
                 "paths": [],
-                "geo": None,
             },
         )
         component = row.get("component", "")
@@ -306,34 +332,24 @@ def _build_nsl_nodes(
         assert isinstance(paths, list)
         paths.append(row["sac_path"])
 
-        geo = _read_station_geo_from_sac_header(row["sac_path"])
-        if not geo.parse_ok or not _has_station_geo(geo):
-            continue
-        ref_geo = bucket["geo"]
-        if ref_geo is None:
-            bucket["geo"] = geo
-        elif isinstance(ref_geo, _StationGeo) and not _same_station_geo(ref_geo, geo):
-            network, station, location = key
-            raise RuntimeError(
-                "NSL geometry conflict for "
-                f"{network}.{station}.{location}: "
-                f"{_geo_label(ref_geo)} from {ref_geo.source_path} vs "
-                f"{_geo_label(geo)} from {geo.source_path}"
-            )
-
     if len(buckets) > 9999:
         raise RuntimeError(f"FastBF NSL_ID currently supports up to 9999 stations; got {len(buckets)}")
 
+    progress(
+        f"station catalog candidates: {len(buckets):,} unique station(s); "
+        "reading one representative SAC header per station"
+    )
     nodes: list[_NslNode] = []
     for index, key in enumerate(sorted(buckets), start=1):
         network, station, location = key
         bucket = buckets[key]
         paths = bucket["paths"]
         components = bucket["components"]
-        geo = bucket["geo"]
         assert isinstance(paths, list)
         assert isinstance(components, set)
-        representative = min(str(path) for path in paths)
+        path_values = sorted(set(str(path) for path in paths))
+        representative = path_values[0]
+        geo = _first_station_geo(path_values)
         lat = lon = ele = None
         if isinstance(geo, _StationGeo):
             lat, lon, ele = geo.lat, geo.lon, geo.ele
@@ -351,6 +367,14 @@ def _build_nsl_nodes(
             )
         )
     return nodes
+
+
+def _first_station_geo(paths: Sequence[str]) -> _StationGeo | None:
+    for path in paths:
+        geo = _read_station_geo_from_sac_header(path)
+        if geo.parse_ok and _has_station_geo(geo):
+            return geo
+    return None
 
 
 def _attach_nsl_ids(

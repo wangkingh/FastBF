@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .arrays import SeisArray
+from .progress import progress
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,22 @@ def organise_sac_files(
         time_start=_parse_time(array["time_start"]),
         time_end=_parse_time(array["time_end"]),
     )
+    station_filter = criteria.get("station")
+    station_count = len(station_filter["value"]) if station_filter else 0
+    time_filter = criteria.get("time", {})
+    progress(
+        "source scan criteria: "
+        f"components={','.join(component_list)}, "
+        f"stations={station_count if station_count else 'ALL'}, "
+        f"time={time_filter.get('type', 'NONE')}"
+    )
 
     seis_array = SeisArray(sac_dir, str(array["pattern"]))
     seis_array.match(threads=cpu_count)
     seis_array.filter(criteria, threads=cpu_count)
     seis_array.group(labels=["time"], sort_labels=["station", "component"], filtered=True)
+    group_count = len(seis_array.files_group or {})
+    progress(f"grouped filtered files into {group_count:,} timestamp group(s)")
     return seis_array.files_group or {}
 
 
