@@ -201,6 +201,8 @@ def parse_window(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     geti = cfg.getint
     win_len    = geti(sec, "win_len")
     shift_len  = geti(sec, "shift_len")
+    taper = cfg.get(sec, "taper", fallback="tukey").strip().lower()
+    taper_alpha = cfg.getfloat(sec, "taper_alpha", fallback=0.05)
 
     # 解析 skip_step，禁止留空，只能是 NONE 或列表
     skip_raw = cfg.get(sec, "skip_step").strip()
@@ -220,6 +222,14 @@ def parse_window(cfg: configparser.ConfigParser) -> Dict[str, Any]:
         abort("[window] win_len must be positive")
     if shift_len <= 0:
         abort("[window] shift_len must be positive")
+    if taper in {"hanning"}:
+        taper = "hann"
+    elif taper in {"rect", "rectangular", "boxcar"}:
+        taper = "none"
+    if taper not in {"hann", "tukey", "none"}:
+        abort("[window] taper must be 'hann', 'tukey', or 'none'")
+    if taper == "tukey" and not (0.0 < taper_alpha <= 1.0):
+        abort("[window] taper_alpha must be in (0, 1] when taper=tukey")
     data = locals().copy()
     for k in (
         "cfg", "sec", "must_int", "geti", "skip_raw","key"
@@ -339,12 +349,21 @@ def parse_output(cfg: configparser.ConfigParser) -> Dict[str, Any]:
 
 def parse_beamforming(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     sec = "beamforming"
+    backend = cfg.get(sec, "backend", fallback="reference").strip().lower()
     method = cfg.get(sec, "method", fallback="capon").strip().lower()
     mode = cfg.get(sec, "mode", fallback="stack").strip().lower()
     group_windows = cfg.getint(sec, "group_windows", fallback=0)
 
-    if method not in {"capon", "bartlett", "both"}:
-        abort("[beamforming] method must be 'capon', 'bartlett', or 'both'")
+    if backend not in {"reference", "power"}:
+        abort("[beamforming] backend must be 'reference' or 'power'")
+    if backend == "reference":
+        if method not in {"capon", "bartlett", "both"}:
+            abort("[beamforming] method must be 'capon', 'bartlett', or 'both' when backend=reference")
+    else:
+        if method in {"channel_deleted", "channel-deleted"}:
+            method = "deleted"
+        if method not in {"raw", "deleted", "both"}:
+            abort("[beamforming] method must be 'raw', 'deleted', or 'both' when backend=power")
     if mode not in {"stack", "grouped", "window"}:
         abort("[beamforming] mode must be 'stack', 'grouped', or 'window'")
     if mode == "window":
@@ -355,7 +374,12 @@ def parse_beamforming(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     elif group_windows < 0:
         abort("[beamforming] group_windows must be non-negative")
 
-    return {"method": method, "mode": mode, "group_windows": group_windows}
+    return {
+        "backend": backend,
+        "method": method,
+        "mode": mode,
+        "group_windows": group_windows,
+    }
 
 
 # ============================================================================

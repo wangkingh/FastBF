@@ -12,6 +12,7 @@ NONE = "NONE"
 
 DEFAULT_EXECUTABLES: dict[str, tuple[str, ...]] = {
     "fastbf_native": ("fastbf_native",),
+    "fastbf_native_power": ("fastbf_native_power",),
 }
 
 

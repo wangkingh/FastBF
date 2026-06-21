@@ -43,9 +43,12 @@ fastbf init -o my.ini
 - `[seisarray.*]`：`sac_dir`、`pattern`、`station_list`、`component_list`
 - `[time_filter]`：`time_start`、`time_end`、`time_list`
 - `[quality_filter]`：`min_stations`
-- `[window]`：`win_len`、`shift_len`、`group_windows`
+- `[window]`：`win_len`、`shift_len`、`taper`、`taper_alpha`
 - `[bands]`：当前一次只跑一个目标频带
-- `[beamforming]`：`method = capon|bartlett|both`，`mode = stack|window`
+- `[beamforming]`：`backend = reference|power`；
+  `reference` 用 `method = capon|bartlett|both`，
+  `power` 用 `method = raw|deleted|both`；
+  `mode = stack|grouped|window`，`group_windows` 只在 grouped 时真正控制分组
 - `[device]`：`ids`、`procs_per_gpu`
 - `[output]`：`dir`
 
@@ -95,6 +98,8 @@ FastBF 的 workspace 在 `[output].dir` 下：
 ```text
 2020-01-01-00-00_capon.npy
 2020-01-01-00-00_bartlett.npy
+2020-01-01-00-00_bartlett_raw.npy
+2020-01-01-00-00_bartlett_channel_deleted.npy
 ```
 
 ## 最容易忘的边界

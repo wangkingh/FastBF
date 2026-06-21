@@ -1,6 +1,6 @@
 # FastBF
 
-[English](README.en.md) | [防忘护栏](docs/USAGE_GUARDRAILS.md) | [配置示例](configs/README.md) | [项目布局](docs/PROJECT_LAYOUT.md) | [更新日志](CHANGELOG.md)
+[English](README.en.md) | [防忘护栏](docs/USAGE_GUARDRAILS.md) | [配置示例](configs/README.md) | [项目布局](docs/PROJECT_LAYOUT.md)
 
 本项目的 v2606 重构、文档整理和发布打包过程使用了 OpenAI Codex / GPT 辅助。
 
@@ -46,6 +46,15 @@ conda env create -f environment.yml
 conda activate fastbf
 ```
 
+如果 WSL 里已经装了 Anaconda/Miniconda 但 `conda` 没有出现在当前 shell，
+先初始化或手动加载 conda：
+
+```bash
+source ~/anaconda3/etc/profile.d/conda.sh
+# 或 source ~/miniconda3/etc/profile.d/conda.sh
+conda activate base
+```
+
 CUDA 架构默认自动检测。如果自动检测失败，可以手动指定：
 
 ```bash
@@ -61,8 +70,12 @@ make install
 fastbf doctor
 ```
 
-`make install` 会调用 `install_fastbf.py`，自动检测 CUDA 架构，编译 native
-后端、把 `fastbf_native` 部署进 Python 包，并安装可编辑的 `fastbf` 命令。
+`make install` 会调用 `install_fastbf.py`，自动检测 CUDA 架构，编译两个
+native 后端、把 `fastbf_native` 和 `fastbf_native_power` 部署进 Python 包，
+并安装可编辑的 `fastbf` 命令。
+
+如果这个 conda 环境里以前安装过旧版 FastBF，也请在当前 checkout 根目录重新
+执行 `make install`，确保 `fastbf` 命令和 native 二进制都指向当前版本。
 
 如果只想编译原生二进制、不安装 Python 包：
 
@@ -70,8 +83,9 @@ fastbf doctor
 make build
 ```
 
-原生二进制会写入 `native/fastbf_native` 和 `bin/fastbf_native`，用于 Python
-包分发的 staged binary 会写入 `caponlib/bin/<platform>/`。
+原生二进制会写入 `native/fastbf_native`、`native/fastbf_native_power`、
+`bin/fastbf_native` 和 `bin/fastbf_native_power`；用于 Python 包分发的
+staged binary 会写入 `caponlib/bin/<platform>/`。
 
 如果隔一段时间忘了完整流程，可以直接运行：
 
@@ -228,6 +242,8 @@ min_stations = 10
 win_len = 1800
 shift_len = 1800
 skip_step = NONE
+taper = tukey
+taper_alpha = 0.05
 
 [slowness_grid]
 s_range = 12.0
@@ -237,6 +253,7 @@ s_res = 0.2
 bands = 0.1/0.2
 
 [beamforming]
+backend = reference
 method = capon
 mode = stack
 group_windows = 4
@@ -264,16 +281,25 @@ dir = ./fastbf_output
 - `time_list = NONE` 表示使用 `time_start/time_end`；否则 `time_list` 文件
   一行一个 `YYYY-MM-DD HH:MM:SS`。
 - `[quality_filter].min_stations` 是 timestamp/list 级别的最小有效台站数。
+- `[window].taper` 支持 `tukey`、`hann` 和 `none`；默认短 Tukey taper
+  (`taper_alpha = 0.05`) 用于避免硬窗边缘，同时尽量接近旧的矩形窗结果。
 - `[bands].bands` 当前只支持一个目标频带。多频带扫描建议多次运行 FastBF。
+- `[beamforming].backend` 选择 native 后端：`reference` 输出 Capon 和通道均衡
+  Bartlett，`power` 输出保留功率尺度的 raw / channel-deleted Bartlett。
 - `[output] format` 不再配置，结果格式由 native runner 控制。
 
 ## Beamforming 选项
 
-`[beamforming].method` 控制扫描算法：
+`[beamforming].backend` 先选择输出族：
 
-- `capon`：只输出 Capon 结果。
-- `bartlett`：只输出 Bartlett 结果。
-- `both`：共享前面的读取、FFT 和协方差流程，同时输出 Capon 和 Bartlett。
+- `reference`：使用 `fastbf_native`，输出 Capon 与通道均衡 Bartlett。
+- `power`：使用 `fastbf_native_power`，输出保留功率尺度的 Bartlett 变体。
+
+`[beamforming].method` 的可选值取决于 backend：
+
+- `reference`：`capon`、`bartlett`、`both`。
+- `power`：`raw`、`deleted`、`both`；`deleted` 也接受
+  `channel_deleted` / `channel-deleted` 作为别名。
 
 `[beamforming].mode` 控制输出时间粒度：
 
@@ -287,15 +313,19 @@ dir = ./fastbf_output
 [window]
 win_len = 1800
 shift_len = 1800
+taper = tukey
+taper_alpha = 0.05
 
 [beamforming]
+backend = reference
 method = both
 mode = grouped
 group_windows = 4
 ```
 
 表示每个基础窗口为 30 分钟，每 4 个窗口输出一次结果，也就是约每 2 小时输
-出一组 Capon/Bartlett。
+出一组 Capon/Bartlett。若改为 `backend = power`，对应输出会变成
+`_bartlett_raw.npy` 和/或 `_bartlett_channel_deleted.npy`。
 
 ## Workspace 输出
 
@@ -327,8 +357,9 @@ native 当前写出临时 `.npy` 结果；后续计划替换为 FastBF 自定义
 
 ## Native 后端
 
-Python 只负责任务准备和进程调度，重计算由 `fastbf_native` 完成。native 命令
-的大致形状如下：
+Python 只负责任务准备和进程调度，重计算由 native 二进制完成：
+`backend = reference` 使用 `fastbf_native`，`backend = power` 使用
+`fastbf_native_power`。native 命令的大致形状如下：
 
 ```bash
 fastbf_native \
@@ -337,6 +368,8 @@ fastbf_native \
   -O workspace/bf \
   -B 0.1/0.2 \
   -W 1800/1800 \
+  --taper tukey \
+  --tukey-alpha 0.05 \
   -S 12/0.2 \
   --method capon \
   --mode stack \
@@ -359,7 +392,6 @@ example/           自包含 synthetic SAC 安装烟测
 configs/           可复用配置示例
 docs/              项目布局和开发说明
 tools/             绘图和后处理辅助脚本
-github_fastbf_zip/ 旧 GitHub 拷贝，仅用于速度和结果对比
 bin/               本地构建出的 native 二进制
 ```
 
@@ -368,4 +400,5 @@ FastBF 的 inventory/prepare 部分借鉴 FastXC 的轻量外骨架，但没有�
 `sourcepack/` 或 `stack/`。
 
 当前主流程已经移除旧 Python `SeisHandler`、`sac_refactor.py`、
-`cfk`/`ias_capon` 执行路径。旧实现只保留在 `github_fastbf_zip/` 中用于对比。
+`cfk`/`ias_capon` 执行路径。旧实现保留在 `legacy/pre-v2606` 分支和
+`legacy-pre-v2606` 标签中用于对比。

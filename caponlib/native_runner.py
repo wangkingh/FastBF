@@ -32,6 +32,7 @@ class NativeRunResult:
     geometry_path: Path
     sac_list_count: int
     worker_count: int
+    backend: str
     method: str
     mode: str
     dry_run: bool
@@ -69,11 +70,12 @@ def run_native(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     geometry_path = write_native_geometry(prepared.inventory.nsl_catalog, native_dir / "geometry.tsv")
-    native = Path(native_binary).expanduser().resolve() if native_binary else _native_binary()
     band = prepared.bands[0]
     window = prepared.window
     slow = prepared.slow
     beamforming = prepared.beamforming
+    backend = str(beamforming.get("backend", "reference"))
+    native = Path(native_binary).expanduser().resolve() if native_binary else _native_binary(backend)
 
     gpu_ids = [int(item) for item in prepared.device["ids"]]
     if serial:
@@ -99,6 +101,8 @@ def run_native(
             band=band,
             win_len=float(window["win_len"]),
             shift_len=float(window["shift_len"]),
+            taper=str(window.get("taper", "tukey")),
+            taper_alpha=float(window.get("taper_alpha", 0.05)),
             s_range=float(slow["s_range"]),
             s_res=float(slow["s_res"]),
             method=str(beamforming["method"]),
@@ -122,6 +126,7 @@ def run_native(
             geometry_path=geometry_path,
             sac_list_count=len(sac_lists),
             worker_count=len(worker_specs),
+            backend=backend,
             method=str(beamforming["method"]),
             mode=str(beamforming["mode"]),
             dry_run=True,
@@ -151,6 +156,7 @@ def run_native(
         geometry_path=geometry_path,
         sac_list_count=len(sac_lists),
         worker_count=len(worker_specs),
+        backend=backend,
         method=str(beamforming["method"]),
         mode=str(beamforming["mode"]),
         dry_run=False,
@@ -351,6 +357,8 @@ def _native_command(
     band: tuple[float, float],
     win_len: float,
     shift_len: float,
+    taper: str,
+    taper_alpha: float,
     s_range: float,
     s_res: float,
     method: str,
@@ -373,6 +381,10 @@ def _native_command(
         f"{band[0]}/{band[1]}",
         "-W",
         f"{win_len:g}/{shift_len:g}",
+        "--taper",
+        taper,
+        "--tukey-alpha",
+        f"{taper_alpha:g}",
         "-S",
         f"{s_range:g}/{s_res:g}",
         "--method",
@@ -431,19 +443,26 @@ def _run_workers(
     return results
 
 
-def _native_binary() -> Path:
+def _native_binary(backend: str = "reference") -> Path:
     from .system import resolve_executable
+
+    if backend == "power":
+        env_bin = "FASTBF_NATIVE_POWER_BIN"
+        default_names = ("fastbf_native_power",)
+    else:
+        env_bin = "FASTBF_NATIVE_BIN"
+        default_names = ("fastbf_native",)
 
     candidate = Path(
         resolve_executable(
-            value=os.environ.get("FASTBF_NATIVE_BIN"),
-            default_names=("fastbf_native",),
+            value=os.environ.get(env_bin),
+            default_names=default_names,
             root=os.environ.get("FASTBF_NATIVE_ROOT", "AUTO"),
         )
     ).expanduser()
     if not candidate.is_file():
         raise RuntimeError(
-            f"native binary not found: {candidate}; run `make install` or set FASTBF_NATIVE_BIN"
+            f"native binary not found: {candidate}; run `make install` or set {env_bin}"
         )
     return candidate.resolve()
 

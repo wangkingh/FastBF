@@ -1,6 +1,6 @@
 # FastBF
 
-[中文主文档](README.md) | [Usage Guardrails](docs/USAGE_GUARDRAILS.md) | [Config Examples](configs/README.md) | [Project Layout](docs/PROJECT_LAYOUT.md) | [Changelog](CHANGELOG.md)
+[中文主文档](README.md) | [Usage Guardrails](docs/USAGE_GUARDRAILS.md) | [Config Examples](configs/README.md) | [Project Layout](docs/PROJECT_LAYOUT.md)
 
 The v2606 refactor, documentation cleanup, and release packaging for this
 project were assisted by OpenAI Codex / GPT.
@@ -50,6 +50,15 @@ conda env create -f environment.yml
 conda activate fastbf
 ```
 
+If Anaconda/Miniconda is installed in WSL but `conda` is not available in the
+current shell, initialize or source conda first:
+
+```bash
+source ~/anaconda3/etc/profile.d/conda.sh
+# Or source ~/miniconda3/etc/profile.d/conda.sh
+conda activate base
+```
+
 CUDA architecture is auto-detected. If detection fails, override it explicitly:
 
 ```bash
@@ -66,18 +75,24 @@ fastbf doctor
 ```
 
 `make install` calls `install_fastbf.py`, auto-detects the CUDA architecture,
-builds the native backend, stages `fastbf_native` into the Python package, and
-installs the editable `fastbf` command.
+builds both native backends, stages `fastbf_native` and `fastbf_native_power`
+into the Python package, and installs the editable `fastbf` command.
 
-If you only want to build the native binary without installing the Python
+If the same conda environment had an older FastBF checkout installed before,
+run `make install` again from this checkout so the `fastbf` command and native
+binaries point to the current version.
+
+If you only want to build the native binaries without installing the Python
 package:
 
 ```bash
 make build
 ```
 
-Native binaries are written to `native/fastbf_native` and `bin/fastbf_native`;
-package-staged binaries are written under `caponlib/bin/<platform>/`.
+Native binaries are written to `native/fastbf_native`,
+`native/fastbf_native_power`, `bin/fastbf_native`, and
+`bin/fastbf_native_power`; package-staged binaries are written under
+`caponlib/bin/<platform>/`.
 
 If you come back later and forget the full workflow, run:
 
@@ -244,6 +259,8 @@ min_stations = 10
 win_len = 1800
 shift_len = 1800
 skip_step = NONE
+taper = tukey
+taper_alpha = 0.05
 
 [slowness_grid]
 s_range = 12.0
@@ -253,6 +270,7 @@ s_res = 0.2
 bands = 0.1/0.2
 
 [beamforming]
+backend = reference
 method = capon
 mode = stack
 group_windows = 4
@@ -282,19 +300,29 @@ Configuration notes:
   contains one `YYYY-MM-DD HH:MM:SS` timestamp per line.
 - `[quality_filter].min_stations` is the minimum valid station count per
   timestamp/list.
+- `[window].taper` accepts `tukey`, `hann`, or `none`. The default short Tukey
+  taper (`taper_alpha = 0.05`) avoids hard window edges while staying close to
+  older rectangular-window runs.
 - `[bands].bands` currently accepts one target band. Run FastBF once per band
   for frequency sweeps.
+- `[beamforming].backend` selects the native output family: `reference` writes
+  Capon and channel-equalized Bartlett outputs, while `power` writes
+  power-preserving raw / channel-deleted Bartlett outputs.
 - `[output] format` is intentionally absent; the native runner owns the concrete
   output format.
 
 ## Beamforming Options
 
-`[beamforming].method` selects the scanning algorithm:
+`[beamforming].backend` first selects the output family:
 
-- `capon`: write Capon results only.
-- `bartlett`: write Bartlett results only.
-- `both`: share reading, FFT, and covariance work, then write both Capon and
-  Bartlett results.
+- `reference`: use `fastbf_native` for Capon and channel-equalized Bartlett.
+- `power`: use `fastbf_native_power` for power-preserving Bartlett variants.
+
+`[beamforming].method` depends on the selected backend:
+
+- `reference`: `capon`, `bartlett`, or `both`.
+- `power`: `raw`, `deleted`, or `both`; `deleted` also accepts the
+  `channel_deleted` / `channel-deleted` aliases.
 
 `[beamforming].mode` controls output cadence:
 
@@ -309,15 +337,19 @@ Example:
 [window]
 win_len = 1800
 shift_len = 1800
+taper = tukey
+taper_alpha = 0.05
 
 [beamforming]
+backend = reference
 method = both
 mode = grouped
 group_windows = 4
 ```
 
 This uses 30-minute base windows and writes Capon/Bartlett output roughly every
-2 hours.
+2 hours. With `backend = power`, the corresponding outputs are
+`_bartlett_raw.npy` and/or `_bartlett_channel_deleted.npy`.
 
 ## Workspace Outputs
 
@@ -351,8 +383,10 @@ to be replaced by a FastBF project binary format.
 
 ## Native Backend
 
-Python prepares work and dispatches processes; heavy compute is handled by
-`fastbf_native`. A representative native command looks like:
+Python prepares work and dispatches processes; heavy compute is handled by the
+native binaries. `backend = reference` uses `fastbf_native`, and
+`backend = power` uses `fastbf_native_power`. A representative native command
+looks like:
 
 ```bash
 fastbf_native \
@@ -361,6 +395,8 @@ fastbf_native \
   -O workspace/bf \
   -B 0.1/0.2 \
   -W 1800/1800 \
+  --taper tukey \
+  --tukey-alpha 0.05 \
   -S 12/0.2 \
   --method capon \
   --mode stack \
@@ -383,7 +419,6 @@ example/           self-contained synthetic SAC installation smoke test
 configs/           reusable configuration examples
 docs/              project layout and development notes
 tools/             plotting and post-processing helpers
-github_fastbf_zip/ archived old GitHub copy for speed/result comparison only
 bin/               locally built native binaries
 ```
 
@@ -393,4 +428,5 @@ does not create FastXC middle-stage structures such as `path_plan/`,
 
 The current main pipeline has removed the old Python `SeisHandler`,
 `sac_refactor.py`, and `cfk`/`ias_capon` execution paths. The old
-implementation is kept only under `github_fastbf_zip/` for comparisons.
+implementation is kept in the `legacy/pre-v2606` branch and the
+`legacy-pre-v2606` tag for comparisons.

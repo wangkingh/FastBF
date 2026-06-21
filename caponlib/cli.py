@@ -117,6 +117,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "Run: "
         f"{result.sac_list_count} SAC list(s), "
         f"{result.worker_count} worker(s), "
+        f"backend={result.backend}, "
         f"method={result.method}, "
         f"mode={result.mode}"
     )

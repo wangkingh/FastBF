@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
 
 # Editor-local settings
 .vscode/
@@ -21,6 +22,7 @@ env/
 bin/
 caponlib/bin/
 native/fastbf_native
+native/fastbf_native_power
 
 # Runtime outputs and local experiments
 fastbf_output/
@@ -29,10 +31,22 @@ artifacts/*
 !artifacts/README.md
 example/data/
 example/workspace/
+example/*workspace/
+example/X2_2015_01/
 testing/
 testing/workspace*/
 testing/X2_2015_symlink_days/
 github_fastbf_zip/
+exp_algorithm_validation/
+exp_window_level_analysis/
+exp_daily_level_analysis/
+experiment/
+runs/
+server_beamforming/
+SERVER_BEAMFORMING_SCOPE.md
+station_subarrays_7/
+vpn108_server/
+vpn_108*/
 
 # Data products
 *.sac
@@ -46,6 +60,14 @@ github_fastbf_zip/
 *.nsys-rep
 *.sqlite
 *.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.gz
+*.bz2
+*.xz
 
 # Local user configs
 configs/local*.ini
