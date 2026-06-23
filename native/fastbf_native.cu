@@ -323,6 +323,7 @@ struct Options {
     std::string method = "capon";
     std::string mode = "stack";
     int group_windows = 0;
+    std::vector<int> skip_steps;
     bool profile = false;
 };
 
@@ -924,7 +925,8 @@ int py_round(double value)
 
 std::vector<std::pair<int, int>> build_windows(int npts, double dt,
                                                double win_len,
-                                               double shift_len)
+                                               double shift_len,
+                                               const std::vector<int> &skip_steps)
 {
     int nsamp = py_round(win_len / dt);
     int hop = py_round(shift_len / dt);
@@ -933,8 +935,20 @@ std::vector<std::pair<int, int>> build_windows(int npts, double dt,
     if (nsamp > npts)
         throw std::runtime_error("window length exceeds npts");
     std::vector<std::pair<int, int>> windows;
-    for (int start = 0; start + nsamp <= npts; start += hop)
+    int total_steps = 0;
+    for (int start = 0; start + nsamp <= npts; start += hop, ++total_steps)
+    {
+        if (std::find(skip_steps.begin(), skip_steps.end(), total_steps) != skip_steps.end())
+            continue;
         windows.emplace_back(start, start + nsamp);
+    }
+    for (int step : skip_steps)
+    {
+        if (step < 0 || step >= total_steps)
+            throw std::runtime_error("--skip-step index out of range for this record");
+    }
+    if (windows.empty())
+        throw std::runtime_error("all windows were skipped by --skip-step");
     return windows;
 }
 
@@ -979,7 +993,8 @@ ListPlan build_list_plan(const std::string &saclist_path,
     plan.nr = static_cast<int>(plan.rows.size());
     plan.dt = shape_header.delta;
     plan.windows = build_windows(plan.common_npts, plan.dt,
-                                 opt.win_len, opt.shift_len);
+                                 opt.win_len, opt.shift_len,
+                                 opt.skip_steps);
     plan.nwin = static_cast<int>(plan.windows.size());
     plan.nsamp = plan.windows.front().second - plan.windows.front().first;
     plan.nfreq = plan.nsamp / 2 + 1;
@@ -1491,6 +1506,36 @@ std::pair<double, double> parse_pair_double(const std::string &text,
     return {std::stod(text.substr(0, slash)), std::stod(text.substr(slash + 1))};
 }
 
+std::vector<int> parse_int_list(const std::string &text,
+                                const std::string &name)
+{
+    std::vector<int> values;
+    std::stringstream stream(text);
+    std::string item;
+    while (std::getline(stream, item, ','))
+    {
+        item = trim(item);
+        if (item.empty())
+            continue;
+        std::size_t used = 0;
+        int value = 0;
+        try
+        {
+            value = std::stoi(item, &used);
+        }
+        catch (const std::exception &err)
+        {
+            throw std::runtime_error(name + " must be comma-separated integers: " + err.what());
+        }
+        if (used != item.size())
+            throw std::runtime_error(name + " must be comma-separated integers");
+        values.push_back(value);
+    }
+    if (values.empty())
+        throw std::runtime_error(name + " requires at least one integer");
+    return values;
+}
+
 void lowercase_inplace(std::string &text)
 {
     std::transform(text.begin(), text.end(), text.begin(),
@@ -1552,6 +1597,8 @@ Options parse_args(int argc, char **argv)
             opt.mode = trim(need(arg));
         else if (arg == "--group-windows")
             opt.group_windows = std::stoi(need(arg));
+        else if (arg == "--skip-step")
+            opt.skip_steps = parse_int_list(need(arg), arg);
         else if (arg == "-G" || arg == "--gpu")
             opt.gpu = std::stoi(need(arg));
         else if (arg == "--dl")
@@ -1569,6 +1616,7 @@ Options parse_args(int argc, char **argv)
                          "-B fmin/fmax -W win/shift -S range/res "
                          "[--mode stack|grouped|window] "
                          "[--group-windows N] "
+                         "[--skip-step i,j] "
                          "[--taper hann|tukey|none] [--tukey-alpha A] "
                          "[--method capon|bartlett|both] "
                          "[--steering-cache auto|none|host|device] "
@@ -1598,6 +1646,11 @@ Options parse_args(int argc, char **argv)
         throw std::runtime_error("--mode grouped requires --group-windows N");
     if (opt.mode == "stack" && opt.group_windows < 0)
         throw std::runtime_error("--group-windows must be non-negative");
+    for (int step : opt.skip_steps)
+    {
+        if (step < 0)
+            throw std::runtime_error("--skip-step values must be non-negative");
+    }
     if (opt.record_samples < 0 || opt.record_seconds < 0.0)
         throw std::runtime_error("record length overrides must be non-negative");
     if (opt.record_samples > 0 && opt.record_seconds > 0.0)

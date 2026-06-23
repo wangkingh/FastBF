@@ -281,6 +281,8 @@ dir = ./fastbf_output
 - `time_list = NONE` 表示使用 `time_start/time_end`；否则 `time_list` 文件
   一行一个 `YYYY-MM-DD HH:MM:SS`。
 - `[quality_filter].min_stations` 是 timestamp/list 级别的最小有效台站数。
+- `[window].skip_step` 是 0-based 基础窗编号列表，表示在 stack/grouped/window
+  输出前跳过这些基础窗；`NONE` 表示不跳窗。
 - `[window].taper` 支持 `tukey`、`hann` 和 `none`；默认短 Tukey taper
   (`taper_alpha = 0.05`) 用于避免硬窗边缘，同时尽量接近旧的矩形窗结果。
 - `[bands].bands` 当前只支持一个目标频带。多频带扫描建议多次运行 FastBF。

@@ -300,6 +300,8 @@ Configuration notes:
   contains one `YYYY-MM-DD HH:MM:SS` timestamp per line.
 - `[quality_filter].min_stations` is the minimum valid station count per
   timestamp/list.
+- `[window].skip_step` is a list of 0-based base-window indices to remove
+  before stack/grouped/window output is built; `NONE` disables skipping.
 - `[window].taper` accepts `tukey`, `hann`, or `none`. The default short Tukey
   taper (`taper_alpha = 0.05`) avoids hard window edges while staying close to
   older rectangular-window runs.

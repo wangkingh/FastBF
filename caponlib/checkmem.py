@@ -65,6 +65,7 @@ def checkmem(config_path: str | Path, *, safety_ratio: float = 0.80) -> CheckMem
     progress(f"using native binary {native}")
     band = prepared.bands[0]
     window = prepared.window
+    skip_steps = tuple(int(item) for item in window.get("skip_step", []))
     slow = prepared.slow
     plans: list[GpuMemoryPlan] = []
     gpu_ids = [int(gpu_id) for gpu_id in prepared.device["ids"]]
@@ -75,6 +76,7 @@ def checkmem(config_path: str | Path, *, safety_ratio: float = 0.80) -> CheckMem
         f"mode={prepared.beamforming['mode']}, "
         f"band={band[0]}/{band[1]}, "
         f"window={window['win_len']}/{window['shift_len']}, "
+        f"skip_step={','.join(str(step) for step in skip_steps) if skip_steps else 'NONE'}, "
         f"gpu_ids={','.join(str(gpu_id) for gpu_id in gpu_ids)}"
     )
     for gpu_id in gpu_ids:
@@ -84,6 +86,7 @@ def checkmem(config_path: str | Path, *, safety_ratio: float = 0.80) -> CheckMem
             band=band,
             win_len=window["win_len"],
             shift_len=window["shift_len"],
+            skip_steps=skip_steps,
             taper=str(window.get("taper", "tukey")),
             taper_alpha=float(window.get("taper_alpha", 0.05)),
             s_range=slow["s_range"],
@@ -150,6 +153,7 @@ def _run_native_plan(
     band: tuple[float, float],
     win_len: float,
     shift_len: float,
+    skip_steps: Sequence[int],
     taper: str,
     taper_alpha: float,
     s_range: float,
@@ -185,6 +189,8 @@ def _run_native_plan(
     ]
     if mode == "grouped":
         cmd.extend(["--group-windows", str(group_windows)])
+    if skip_steps:
+        cmd.extend(["--skip-step", ",".join(str(int(step)) for step in skip_steps)])
     env = os.environ.copy()
     progress(
         f"GPU {gpu_id}: running native --plan-only on {manifest.name}; "

@@ -25,6 +25,7 @@ Beamforming output cadence is controlled by `[beamforming] mode`:
 [window]
 win_len = 1800
 shift_len = 1800
+skip_step = NONE      ; 0-based base-window indices to skip, or NONE
 taper = tukey         ; tukey, hann, or none
 taper_alpha = 0.05    ; used only when taper = tukey
 
@@ -53,6 +54,8 @@ The `power` backend writes power-preserving Bartlett variants:
 
 The timestamp is the start time of the first base window in that group. The
 last group is written even if it contains fewer than `group_windows` windows.
+`skip_step` removes 0-based base-window indices before stack/grouped/window
+output is built.
 
 The default short Tukey taper (`taper = tukey`, `taper_alpha = 0.05`) keeps the
 old rectangular-window behavior close while avoiding hard window edges. Use
