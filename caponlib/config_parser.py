@@ -204,19 +204,19 @@ def parse_window(cfg: configparser.ConfigParser) -> Dict[str, Any]:
     taper = cfg.get(sec, "taper", fallback="tukey").strip().lower()
     taper_alpha = cfg.getfloat(sec, "taper_alpha", fallback=0.05)
 
-    # 解析 skip_step，禁止留空，只能是 NONE 或列表
+    # 解析 skip_step，禁止留空，只能是 NONE 或 0-based 列表
     skip_raw = cfg.get(sec, "skip_step").strip()
     if not skip_raw:
         abort("[window] skip_step cannot be empty; use 'NONE' or a list")
 
     if skip_raw.upper() == "NONE":
-        skip_step: Union[str, List[int]] = []     # sentinel，交由上层判断
+        skip_step: List[int] = []
     else:
         skip_step = parse_list_of_ints(skip_raw)
         if not skip_step:
             abort("[window] skip_step list cannot be empty")
-        if any(x <= 0 for x in skip_step):
-            abort("[window] skip_step elements must be positive integers")
+        if any(x < 0 for x in skip_step):
+            abort("[window] skip_step elements must be non-negative integers")
         
     if win_len <= 0:
         abort("[window] win_len must be positive")

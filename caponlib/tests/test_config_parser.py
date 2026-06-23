@@ -71,6 +71,21 @@ class ConfigParserTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "taper must"):
                 parse_and_validate(cfg)
 
+    def test_window_skip_step_is_zero_based(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _write_config(Path(tmp), bands="0.1/0.2", skip_step="0,18")
+
+            parsed = parse_and_validate(cfg)
+
+            self.assertEqual([0, 18], parsed[3]["skip_step"])
+
+    def test_window_skip_step_rejects_negative_index(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = _write_config(Path(tmp), bands="0.1/0.2", skip_step="-1")
+
+            with self.assertRaisesRegex(RuntimeError, "non-negative"):
+                parse_and_validate(cfg)
+
 
 def _write_config(
     root: Path,
@@ -80,6 +95,7 @@ def _write_config(
     method: str = "capon",
     taper: str | None = None,
     taper_alpha: float | None = None,
+    skip_step: str = "NONE",
 ) -> Path:
     sac_dir = root / "sac"
     sac_dir.mkdir()
@@ -111,7 +127,7 @@ min_stations = 1
 [window]
 win_len = 1800
 shift_len = 1800
-skip_step = NONE
+skip_step = {skip_step}
 {taper_lines}
 
 [slowness_grid]

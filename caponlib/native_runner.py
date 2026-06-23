@@ -72,6 +72,7 @@ def run_native(
     geometry_path = write_native_geometry(prepared.inventory.nsl_catalog, native_dir / "geometry.tsv")
     band = prepared.bands[0]
     window = prepared.window
+    skip_steps = tuple(int(item) for item in window.get("skip_step", []))
     slow = prepared.slow
     beamforming = prepared.beamforming
     backend = str(beamforming.get("backend", "reference"))
@@ -101,6 +102,7 @@ def run_native(
             band=band,
             win_len=float(window["win_len"]),
             shift_len=float(window["shift_len"]),
+            skip_steps=skip_steps,
             taper=str(window.get("taper", "tukey")),
             taper_alpha=float(window.get("taper_alpha", 0.05)),
             s_range=float(slow["s_range"]),
@@ -357,6 +359,7 @@ def _native_command(
     band: tuple[float, float],
     win_len: float,
     shift_len: float,
+    skip_steps: Sequence[int],
     taper: str,
     taper_alpha: float,
     s_range: float,
@@ -398,6 +401,8 @@ def _native_command(
     ]
     if mode == "grouped":
         cmd.extend(["--group-windows", str(group_windows)])
+    if skip_steps:
+        cmd.extend(["--skip-step", ",".join(str(int(step)) for step in skip_steps)])
     if freq_chunk_bins > 0:
         cmd.extend(["--freq-chunk-bins", str(freq_chunk_bins)])
     if profile:
